@@ -1,0 +1,635 @@
+name: Build Jarvis APK
+
+on:
+  workflow_dispatch:
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Write project files
+        run: |
+          mkdir -p $(dirname 'settings.gradle.kts')
+          cat > 'settings.gradle.kts' << 'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Jarvis"
+          include(":app")
+          EOF
+          mkdir -p $(dirname 'build.gradle.kts')
+          cat > 'build.gradle.kts' << 'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+          mkdir -p $(dirname 'gradle.properties')
+          cat > 'gradle.properties' << 'EOF'
+          org.gradle.jvmargs=-Xmx3g
+          android.nonTransitiveRClass=true
+          EOF
+          mkdir -p $(dirname 'app/build.gradle.kts')
+          cat > 'app/build.gradle.kts' << 'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.jarvis.app"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.jarvis.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+                  ndk {
+                      abiFilters.add("arm64-v8a")
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("net.java.dev.jna:jna:5.13.0@aar")
+              implementation("com.alphacephei:vosk-android:0.3.47")
+          }
+          EOF
+          mkdir -p $(dirname 'app/src/main/AndroidManifest.xml')
+          cat > 'app/src/main/AndroidManifest.xml' << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:label="Jarvis"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".JarvisService"
+                      android:exported="false"
+                      android:foregroundServiceType="microphone" />
+
+                  <service
+                      android:name=".JarvisAccessibilityService"
+                      android:exported="true"
+                      android:label="Jarvis"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+          mkdir -p $(dirname 'app/src/main/res/xml/accessibility_config.xml')
+          cat > 'app/src/main/res/xml/accessibility_config.xml' << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:description="@string/acc_desc"
+              android:notificationTimeout="100" />
+          EOF
+          mkdir -p $(dirname 'app/src/main/res/values/strings.xml')
+          cat > 'app/src/main/res/values/strings.xml' << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="acc_desc">Jarvis: lock screen, home, back, screenshot</string>
+          </resources>
+          EOF
+          mkdir -p $(dirname 'app/src/main/java/com/jarvis/app/JarvisAccessibilityService.kt')
+          cat > 'app/src/main/java/com/jarvis/app/JarvisAccessibilityService.kt' << 'EOF'
+          package com.jarvis.app
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.Intent
+          import android.view.accessibility.AccessibilityEvent
+
+          class JarvisAccessibilityService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: JarvisAccessibilityService? = null
+              }
+
+              override fun onServiceConnected() {
+                  instance = this
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  instance = null
+                  return super.onUnbind(intent)
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {}
+          }
+          EOF
+          mkdir -p $(dirname 'app/src/main/java/com/jarvis/app/MainActivity.kt')
+          cat > 'app/src/main/java/com/jarvis/app/MainActivity.kt' << 'EOF'
+          package com.jarvis.app
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+
+          class MainActivity : Activity() {
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val pad = (16 * resources.displayMetrics.density).toInt()
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setPadding(pad, pad, pad, pad)
+
+                  val title = TextView(this)
+                  title.text = "جارویس\nمراحل ۱ تا ۴ را یک بار انجام بده، بعد شروع را بزن."
+                  title.textSize = 18f
+                  root.addView(title)
+
+                  fun add(label: String, action: () -> Unit) {
+                      val b = Button(this)
+                      b.text = label
+                      b.setOnClickListener { action() }
+                      root.addView(b)
+                  }
+
+                  add("۱) دسترسی میکروفون و اعلان") {
+                      requestPermissions(
+                          arrayOf(Manifest.permission.RECORD_AUDIO, "android.permission.POST_NOTIFICATIONS"),
+                          1
+                      )
+                  }
+                  add("۲) فعال‌سازی Accessibility (برای قفل صفحه و...)") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+                  add("۳) نمایش روی برنامه‌ها (برای باز کردن برنامه‌ها)") {
+                      startActivity(
+                          Intent(
+                              Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                              Uri.parse("package:" + packageName)
+                          )
+                      )
+                  }
+                  add("۴) بهینه‌سازی باتری را خاموش کن") {
+                      startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                  }
+                  add("▶ شروع جارویس") {
+                      startForegroundService(Intent(this, JarvisService::class.java))
+                  }
+                  add("■ توقف") {
+                      stopService(Intent(this, JarvisService::class.java))
+                  }
+
+                  val scroll = ScrollView(this)
+                  scroll.addView(root)
+                  setContentView(scroll)
+              }
+          }
+          EOF
+          mkdir -p $(dirname 'app/src/main/java/com/jarvis/app/JarvisService.kt')
+          cat > 'app/src/main/java/com/jarvis/app/JarvisService.kt' << 'EOF'
+          package com.jarvis.app
+
+          import android.accessibilityservice.AccessibilityService
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.hardware.camera2.CameraCharacteristics
+          import android.hardware.camera2.CameraManager
+          import android.media.AudioFormat
+          import android.media.AudioManager
+          import android.media.AudioRecord
+          import android.media.MediaRecorder
+          import android.media.ToneGenerator
+          import android.os.BatteryManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.os.PowerManager
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import android.widget.Toast
+          import org.json.JSONObject
+          import org.vosk.Model
+          import org.vosk.Recognizer
+          import java.io.File
+          import java.io.IOException
+          import java.util.Calendar
+          import java.util.Locale
+
+          class JarvisService : Service() {
+
+              @Volatile private var running = false
+              @Volatile private var busy = true
+              @Volatile private var commandMode = false
+              @Volatile private var needReset = false
+              @Volatile private var commandDeadline = 0L
+
+              private var tts: TextToSpeech? = null
+              private var ttsReady = false
+              private var wakeLock: PowerManager.WakeLock? = null
+              private val main = Handler(Looper.getMainLooper())
+              private var torchOn = false
+              @Volatile private var lastHeardToast = 0L
+              private val wakeWords = listOf(
+                  "jarvis", "travis", "jarvas", "jarvic", "javis", "jarves", "jervis", "jar vis", "jar this"
+              )
+
+              private val apps = mapOf(
+                  "واتساپ" to "com.whatsapp",
+                  "واتس" to "com.whatsapp",
+                  "تلگرام" to "org.telegram.messenger",
+                  "اینستاگرام" to "com.instagram.android",
+                  "یوتیوب" to "com.google.android.youtube",
+                  "کروم" to "com.android.chrome",
+                  "دوربین" to "com.android.camera",
+                  "تنظیمات" to "com.android.settings",
+                  "نقشه" to "com.google.android.apps.maps"
+              )
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (running) return START_STICKY
+                  running = true
+
+                  val channelId = "jarvis"
+                  val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  nm.createNotificationChannel(
+                      NotificationChannel(channelId, "Jarvis", NotificationManager.IMPORTANCE_LOW)
+                  )
+                  val notification = Notification.Builder(this, channelId)
+                      .setContentTitle("Jarvis is listening")
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .build()
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                  } else {
+                      startForeground(1, notification)
+                  }
+
+                  val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                  wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "jarvis:listen")
+                  wakeLock?.acquire()
+
+                  tts = TextToSpeech(this) { status ->
+                      if (status == TextToSpeech.SUCCESS) {
+                          tts?.setLanguage(Locale.US)
+                          ttsReady = true
+                      }
+                  }
+
+                  Thread { loop() }.start()
+                  return START_STICKY
+              }
+
+              override fun onDestroy() {
+                  running = false
+                  tts?.shutdown()
+                  wakeLock?.let { if (it.isHeld) it.release() }
+                  super.onDestroy()
+              }
+
+              private fun toast(msg: String) {
+                  main.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+              }
+
+              private fun loop() {
+                  try {
+                      toast("Jarvis: loading models...")
+                      val enModel = Model(copyAssets("model-en"))
+                      val faModel = Model(copyAssets("model-fa"))
+                      val wake = Recognizer(enModel, 16000.0f)
+                      val cmd = Recognizer(faModel, 16000.0f)
+
+                      val minBuf = AudioRecord.getMinBufferSize(
+                          16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                      )
+                      val rec = AudioRecord(
+                          MediaRecorder.AudioSource.MIC, 16000,
+                          AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                          maxOf(minBuf, 8192)
+                      )
+                      rec.startRecording()
+                      toast("Jarvis is ready")
+                      busy = false
+
+                      val buf = ShortArray(2000)
+                      val t0 = System.currentTimeMillis()
+                      var peak = 0
+                      var levelReported = false
+                      toast("Say: Jarvis (mic test 4 sec)")
+                      while (running) {
+                          val n = rec.read(buf, 0, buf.size)
+                          if (n <= 0) continue
+                          for (k in 0 until n) {
+                              val a = Math.abs(buf[k].toInt())
+                              if (a > peak) peak = a
+                          }
+                          if (!levelReported && System.currentTimeMillis() - t0 > 4000) {
+                              levelReported = true
+                              toast("Mic level: " + peak + " (0 means blocked)")
+                          }
+                          if (busy) continue
+
+                          if (!commandMode) {
+                              val done = wake.acceptWaveForm(buf, n)
+                              val text = if (done) {
+                                  JSONObject(wake.result).optString("text")
+                              } else {
+                                  JSONObject(wake.partialResult).optString("partial")
+                              }
+                              if (text.isNotBlank() && System.currentTimeMillis() - lastHeardToast > 1500) {
+                                  lastHeardToast = System.currentTimeMillis()
+                                  toast("Wake? " + text)
+                              }
+                              if (wakeWords.any { text.contains(it) }) {
+                                  wake.reset()
+                                  onWake()
+                              }
+                          } else {
+                              if (needReset) {
+                                  cmd.reset()
+                                  needReset = false
+                              }
+                              if (System.currentTimeMillis() > commandDeadline) {
+                                  commandMode = false
+                                  wake.reset()
+                                  continue
+                              }
+                              if (cmd.acceptWaveForm(buf, n)) {
+                                  val t = JSONObject(cmd.result).optString("text")
+                                  if (t.isNotBlank()) {
+                                      commandMode = false
+                                      wake.reset()
+                                      handle(t)
+                                  }
+                              }
+                          }
+                      }
+                      rec.stop()
+                      rec.release()
+                      wake.close()
+                      cmd.close()
+                      enModel.close()
+                      faModel.close()
+                  } catch (e: Throwable) {
+                      toast("Jarvis error: " + e.toString())
+                      stopSelf()
+                  }
+              }
+
+              private fun onWake() {
+                  toast("Jarvis heard you")
+                  try {
+                      ToneGenerator(AudioManager.STREAM_MUSIC, 100).startTone(ToneGenerator.TONE_PROP_BEEP)
+                  } catch (e: Exception) {
+                  }
+                  speak("Yes sir") {
+                      commandDeadline = System.currentTimeMillis() + 7000
+                      needReset = true
+                      commandMode = true
+                  }
+              }
+
+              private fun speak(text: String, after: (() -> Unit)? = null) {
+                  busy = true
+                  val engine = tts
+                  if (engine == null || !ttsReady) {
+                      after?.invoke()
+                      busy = false
+                      return
+                  }
+                  engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(utteranceId: String?) {}
+                      override fun onDone(utteranceId: String?) {
+                          main.postDelayed({
+                              after?.invoke()
+                              busy = false
+                          }, 300)
+                      }
+                      override fun onError(utteranceId: String?) {
+                          after?.invoke()
+                          busy = false
+                      }
+                  })
+                  engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "u" + System.nanoTime())
+              }
+
+              private fun globalAction(action: Int, okText: String) {
+                  val acc = JarvisAccessibilityService.instance
+                  if (acc == null) {
+                      speak("Please enable accessibility first")
+                  } else {
+                      speak(okText) { acc.performGlobalAction(action) }
+                  }
+              }
+
+              private fun handle(t: String) {
+                  toast("Heard: " + t)
+                  fun has(vararg w: String) = w.all { t.contains(it) }
+
+                  when {
+                      has("صفحه", "خاموش") || t.contains("قفل") ->
+                          globalAction(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "Done")
+                      t.contains("اسکرین") ->
+                          globalAction(AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT, "Done")
+                      t.contains("خانه") || t.contains("هوم") ->
+                          globalAction(AccessibilityService.GLOBAL_ACTION_HOME, "Done")
+                      t.contains("برگرد") ->
+                          globalAction(AccessibilityService.GLOBAL_ACTION_BACK, "Done")
+                      t.contains("چراغ") && t.contains("خاموش") -> {
+                          setTorch(false); speak("Flashlight off")
+                      }
+                      t.contains("چراغ") -> {
+                          setTorch(true); speak("Flashlight on")
+                      }
+                      t.contains("باتری") -> {
+                          val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                          val p = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                          speak("Battery is $p percent")
+                      }
+                      t.contains("ساعت") -> {
+                          val c = Calendar.getInstance()
+                          speak("It is " + c.get(Calendar.HOUR_OF_DAY) + ":" + String.format("%02d", c.get(Calendar.MINUTE)))
+                      }
+                      t.contains("صدا") && (t.contains("زیاد") || t.contains("بلند")) -> {
+                          changeVolume(AudioManager.ADJUST_RAISE); speak("Volume up")
+                      }
+                      t.contains("صدا") && (t.contains("کم") || t.contains("پایین")) -> {
+                          changeVolume(AudioManager.ADJUST_LOWER); speak("Volume down")
+                      }
+                      t.contains("باز") -> openApp(t)
+                      else -> speak("Sorry, I did not understand")
+                  }
+              }
+
+              private fun openApp(t: String) {
+                  for ((name, pkg) in apps) {
+                      if (t.contains(name)) {
+                          val i = packageManager.getLaunchIntentForPackage(pkg)
+                          if (i == null) {
+                              speak("That app is not installed")
+                          } else {
+                              i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                              speak("Opening") { startActivity(i) }
+                          }
+                          return
+                      }
+                  }
+                  speak("I do not know that app")
+              }
+
+              private fun changeVolume(direction: Int) {
+                  val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  repeat(3) {
+                      am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+                  }
+              }
+
+              private fun setTorch(on: Boolean) {
+                  try {
+                      val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                      for (id in cm.cameraIdList) {
+                          val flash = cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE)
+                          if (flash == true) {
+                              cm.setTorchMode(id, on)
+                              torchOn = on
+                              return
+                          }
+                      }
+                  } catch (e: Exception) {
+                      toast("Torch error: " + e.message)
+                  }
+              }
+
+              private fun copyAssets(name: String): String {
+                  val dest = File(filesDir, name)
+                  if (File(dest, ".done").exists()) return dest.absolutePath
+                  dest.deleteRecursively()
+                  copyDir(name, dest)
+                  File(dest, ".done").writeText("ok")
+                  return dest.absolutePath
+              }
+
+              private fun copyDir(assetPath: String, dest: File) {
+                  val list = assets.list(assetPath) ?: emptyArray()
+                  if (list.isEmpty()) {
+                      try {
+                          dest.parentFile?.mkdirs()
+                          assets.open(assetPath).use { input ->
+                              dest.outputStream().use { output -> input.copyTo(output) }
+                          }
+                      } catch (e: IOException) {
+                          dest.mkdirs()
+                      }
+                  } else {
+                      dest.mkdirs()
+                      for (f in list) copyDir("$assetPath/$f", File(dest, f))
+                  }
+              }
+          }
+          EOF
+
+      - name: Download speech models
+        run: |
+          mkdir -p app/src/main/assets tmp_fa tmp_en
+          curl -L --fail -o fa.zip https://alphacephei.com/vosk/models/vosk-model-small-fa-0.4.zip
+          curl -L --fail -o en.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+          unzip -q fa.zip -d tmp_fa
+          unzip -q en.zip -d tmp_en
+          mv tmp_fa/vosk-model-small-fa-0.4 app/src/main/assets/model-fa
+          mv tmp_en/vosk-model-small-en-us-0.15 app/src/main/assets/model-en
+          ls app/src/main/assets/model-fa app/src/main/assets/model-en
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Jarvis build ${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
